@@ -3,6 +3,7 @@
   "short_name": "ClickGrid PPM",
   "description": "PPM, inspections, defects, reports and project control for engineering teams.",
   "start_url": "./",
+  "id": "uk.co.clickgrid.ppm",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
