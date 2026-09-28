@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Control</title>
+<style>body{font-family:system-ui,sans-serif;padding:30px;color:#222}#s{font-size:16px}</style>
+</head>
+<body>
+<div id="s">Loading Project Control…</div>
+<script>
+(async function(){
+  try{
+    const sourceUrl="https://raw.githubusercontent.com/reidselectrical2012-dotcom/Project-control/3d88980a610031e65802b3b99866fa314ecb6903/index.html";
+    const r=await fetch(sourceUrl,{cache:"no-store"});
+    if(!r.ok) throw new Error("Could not load the application source ("+r.status+")");
+    let html=await r.text();
+
+    // Remove the Met Office irradiance card from the Solar PV certificate.
+    const moStart='<div class="card" style="margin-top:10px"><h4>Met Office irradiance reference</h4>';
+    const moEndMarker='</div></div></div><div id="spvInverters">';
+    const moStartPos=html.indexOf(moStart);
+    const moEndPos=html.indexOf(moEndMarker,moStartPos);
+    if(moStartPos<0||moEndPos<0) throw new Error("Could not locate the Met Office section.");
+    // Keep the outer certificate-card closing tags, but remove the Met Office card itself.
+    html=html.slice(0,moStartPos)+'</div></div><div id="spvInverters">'+html.slice(moEndPos+moEndMarker.length);
+
+    // Remove the old Met Office comparison status line from each string.
+    html=html.replace(/<div class="spvStatusLine"><span class="spvStatusLabel">Met Office comparison<\/span><span class="spvStatus spv-mo-status neutral">Awaiting reference<\/span><span class="spv-mo-detail"><\/span><\/div>/g,'');
+
+    // Add calculated + measured irradiance fields to every inverter in the edit form.
+    const oldInvFields='<div><label>Rating (kW)</label><input class="spv-inv-rating" value="${eicEsc(inv.rating||\'\')}"></div></div><div class="spvStrings">';
+    const newInvFields='<div><label>Rating (kW)</label><input class="spv-inv-rating" value="${eicEsc(inv.rating||\'\')}"></div><div><label>Calculated irradiance (W/m²)</label><input class="spv-inv-calc-irr" value="${eicEsc(inv.calculated_irradiance_wm2||\'\')}" readonly></div><div><label>Measured irradiance (W/m²)</label><input class="spv-inv-irr" type="number" min="0" step="1" value="${eicEsc(inv.measured_irradiance_wm2||\'\')}" placeholder="Enter meter reading"></div></div><div class="spvStrings">';
+    if(!html.includes(oldInvFields)) throw new Error("Could not locate the inverter fields.");
+    html=html.replace(oldInvFields,newInvFields);
+
+    // Add the same fields to newly-added inverter cards.
+    const oldAddInv='<div><label>Rating (kW)</label><input class="spv-inv-rating"></div></div><div class="spvStrings"></div>';
+    const newAddInv='<div><label>Rating (kW)</label><input class="spv-inv-rating"></div><div><label>Calculated irradiance (W/m²)</label><input class="spv-inv-calc-irr readonly" readonly></div><div><label>Measured irradiance (W/m²)</label><input class="spv-inv-irr" type="number" min="0" step="1" placeholder="Enter meter reading"></div></div><div class="spvStrings"></div>';
+    if(!html.includes(oldAddInv)) throw new Error("Could not locate the add-inverter fields.");
+    html=html.replace(oldAddInv,newAddInv);
+
+    // Add meter serial number fields to System & commissioning.
+    const meterAnchor='<div><label>Export limitation</label><input id="spvexport" value="${eicEsc(d.export_limit)}"></div></div><label>Monitoring / commissioning notes</label>';
+    const meterReplacement='<div><label>Export limitation</label><input id="spvexport" value="${eicEsc(d.export_limit)}"></div><div><label>Solar PV test meter serial number</label><input id="spvtestmeterserial" value="${eicEsc(d.pv_test_meter_serial||\'\')}" placeholder="PV test meter serial number"></div><div><label>Irradiance meter serial number</label><input id="spvirradiancemeterserial" value="${eicEsc(d.irradiance_meter_serial||\'\')}" placeholder="Irradiance meter serial number"></div></div><label>Monitoring / commissioning notes</label>';
+    if(!html.includes(meterAnchor)) throw new Error("Could not locate the commissioning fields.");
+    html=html.replace(meterAnchor,meterReplacement);
+
+    // Store the new certificate-level fields in the blank data model.
+    html=html.replace(
+      "metoffice_source:'Met Office',system_type:",
+      "metoffice_source:'Met Office',pv_test_meter_serial:'',irradiance_meter_serial:'',system_type:"
+    );
+
+    // Add calculated + measured inverter irradiance to the saved data.
+    const saveInvAnchor="rating:el.querySelector('.spv-inv-rating')?.value||'',strings:";
+    const saveInvReplacement="rating:el.querySelector('.spv-inv-rating')?.value||'',calculated_irradiance_wm2:el.querySelector('.spv-inv-calc-irr')?.value||'',measured_irradiance_wm2:el.querySelector('.spv-inv-irr')?.value||'',strings:";
+    if(!html.includes(saveInvAnchor)) throw new Error("Could not locate the inverter save routine.");
+    html=html.replace(saveInvAnchor,saveInvReplacement);
+
+    // Save meter serial numbers and remove the old Met Office certificate fields from the saved form object.
+    const saveTopAnchor="test_time:v('spvtesttime'),metoffice_irradiance_wm2:v('spvmoirr'),metoffice_observation_time:v('spvmotime'),metoffice_station:v('spvmostation'),metoffice_source:v('spvmosource')";
+    const saveTopReplacement="test_time:v('spvtesttime'),pv_test_meter_serial:v('spvtestmeterserial'),irradiance_meter_serial:v('spvirradiancemeterserial')";
+    if(!html.includes(saveTopAnchor)) throw new Error("Could not locate the certificate save fields.");
+    html=html.replace(saveTopAnchor,saveTopReplacement);
+
+    // Replace the inverter irradiance summary/PDF lines so the PDF shows both values and no Met Office reference.
+    const pdfOld="row('Calculated irradiance (per inverter)',calcAvg!==null?(calcAvg.toFixed(0)+' W/m² average across '+irrVals.length+' string'+(irrVals.length===1?'':'s')):'Not calculated');let mo=Number(d.metoffice_irradiance_wm2);let diff=(calcAvg!==null&&Number.isFinite(mo)&&mo>0)?(calcAvg-mo):null;let pct=(diff!==null)?(diff/mo*100):null;row('Met Office comparison',Number.isFinite(mo)&&mo>0?(mo.toFixed(0)+' W/m²; difference '+(diff>=0?'+':'')+diff.toFixed(0)+' W/m² ('+(pct>=0?'+':'')+pct.toFixed(1)+'%)'):'No Met Office reference entered');";
+    const pdfNew="row('Calculated irradiance (per inverter)',calcAvg!==null?(calcAvg.toFixed(0)+' W/m² average across '+irrVals.length+' string'+(irrVals.length===1?'':'s')):'Not calculated');row('Measured irradiance (per inverter)',Number.isFinite(Number(inv.measured_irradiance_wm2))?(Number(inv.measured_irradiance_wm2).toFixed(0)+' W/m²'):'Not entered');";
+    if(!html.includes(pdfOld)) throw new Error("Could not locate the PDF irradiance section.");
+    html=html.replace(pdfOld,pdfNew);
+
+    // Add meter serials to the PDF and remove the old Met Office reference row.
+    const pdfTopOld="row('Site postcode / test time',(d.site_postcode||'')+' / '+(d.test_time||''));row('Date completed',d.date_completed);row('Met Office reference',d.metoffice_irradiance_wm2?((d.metoffice_irradiance_wm2)+' W/m² — '+(d.metoffice_station||'nearest station')+' '+(d.metoffice_observation_time||'')):'Not entered');row('Description',d.description||'Solar PV installation and commissioning');";
+    const pdfTopNew="row('Site postcode / test time',(d.site_postcode||'')+' / '+(d.test_time||''));row('Date completed',d.date_completed);row('Description',d.description||'Solar PV installation and commissioning');";
+    if(!html.includes(pdfTopOld)) throw new Error("Could not locate the PDF client section.");
+    html=html.replace(pdfTopOld,pdfTopNew);
+
+    const pdfSysOld="row('Earthing / export',(d.earthing||'')+' / '+(d.export_limit||''));row('Monitoring / commissioning notes',d.commissioning_notes);";
+    const pdfSysNew="row('Earthing / export',(d.earthing||'')+' / '+(d.export_limit||''));row('Solar PV test meter serial number',d.pv_test_meter_serial||'Not entered');row('Irradiance meter serial number',d.irradiance_meter_serial||'Not entered');row('Monitoring / commissioning notes',d.commissioning_notes);";
+    if(!html.includes(pdfSysOld)) throw new Error("Could not locate the PDF commissioning section.");
+    html=html.replace(pdfSysOld,pdfSysNew);
+
+    // Remove the remaining Met Office helper functions/comparison routine from the application source.
+    const moFuncStart=html.indexOf('function configureMetOfficeApi()');
+    const saveFunc=html.indexOf('function saveSolarPV()',moFuncStart);
+    if(moFuncStart>=0 && saveFunc>moFuncStart){
+      html=html.slice(0,moFuncStart)+html.slice(saveFunc);
+    }
+
+    // Add an inverter-level calculated irradiance updater. It is the average
+    // of the calculated irradiance values for that inverter's strings.
+    const statusFunc="function spvInitStatus(){";
+    const helper="function spvUpdateInverterCalculatedIrradiance(){document.querySelectorAll('#spvInverters .spvInv').forEach(inv=>{let vals=[...inv.querySelectorAll('.spv-st-irr')].map(x=>Number(x.value)).filter(v=>Number.isFinite(v)&&v>=0);let avg=vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null;let el=inv.querySelector('.spv-inv-calc-irr');if(el){el.value=avg===null?'':avg.toFixed(0);el.classList.toggle('spvCalc',avg!==null);}});}";
+    if(!html.includes(statusFunc)) throw new Error("Could not locate the Solar PV status routine.");
+    html=html.replace(statusFunc,helper+"\n"+statusFunc);
+
+    // Ensure inverter-level calculated irradiance refreshes after string changes and on initial load.
+    html=html.replace(
+      "['input','change'].forEach(ev=>st.addEventListener(ev,()=>{update();spvUpdateMetOfficeComparison();}));",
+      "['input','change'].forEach(ev=>st.addEventListener(ev,()=>{update();spvUpdateInverterCalculatedIrradiance();}));"
+    );
+    html=html.replace(
+      "});let moIds=['spvmoirr','spvpostcode','spvtesttime','spvmotime','spvmostation'];moIds.forEach(id=>{let el=document.getElementById(id);if(el)el.addEventListener('input',spvUpdateMetOfficeComparison);});spvUpdateMetOfficeComparison();}",
+      "});spvUpdateInverterCalculatedIrradiance();}"
+    );
+
+    document.open();
+    document.write(html);
+    document.close();
+  }catch(e){
+    document.getElementById("s").innerHTML="<b>Could not load the updated Project Control application.</b><br><br>"+e.message;
+  }
+})();
+</script>
+</body>
+</html>
