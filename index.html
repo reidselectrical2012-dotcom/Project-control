@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loading Project Control…</title>
+<style>body{font-family:system-ui,sans-serif;padding:30px;color:#222}#s{font-size:16px}</style>
+</head>
+<body>
+<div id="s">Loading the Project Control application…</div>
+<script>
+(async function(){
+  try {
+    const sourceUrl="https://raw.githubusercontent.com/reidselectrical2012-dotcom/Project-control/3d88980a610031e65802b3b99866fa314ecb6903/index.html";
+    const r=await fetch(sourceUrl,{cache:"no-store"});
+    if(!r.ok) throw new Error("Could not load the original application ("+r.status+")");
+    let html=await r.text();
+
+    const start=html.indexOf("function configureMetOfficeApi()");
+    const end=html.indexOf("async function saveSolarPV()",start);
+    if(start<0||end<0) throw new Error("Could not locate the Met Office section in index.html");
+
+    const replacement=String.raw`async function fetchMetOfficeReference(){
+  let p=($('spvpostcode')?.value||'').trim();
+  let t=($('spvtesttime')?.value||'').trim();
+  let date=$('spvdate')?.value||new Date().toISOString().slice(0,10);
+  let status=$('spvmoAutoStatus');
+
+  if(!p||!t){
+    if(status) status.innerHTML='<span class="bad">Please enter the site postcode and test time before fetching the reference.</span>';
+    alert('Please enter the site postcode and test time first.');
+    return;
+  }
+
+  let key=localStorage.getItem('clickgrid_metoffice_api_key')||'';
+
+  if(!key){
+    if(confirm('A Met Office Weather DataHub API key is required for automatic station lookup. Would you like to enter it now?')){
+      configureMetOfficeApi();
+      key=localStorage.getItem('clickgrid_metoffice_api_key')||'';
+    }
+  }
+
+  if(!key) return;
+  if(status) status.textContent='Finding site location and weather/irradiance reference…';
+
+  try{
+    let pr=await fetch('https://api.postcodes.io/postcodes/'+encodeURIComponent(p.replace(/\\s+/g,'')));
+    if(!pr.ok) throw new Error('Postcode lookup failed');
+    let pj=await pr.json();
+    if(!pj.result) throw new Error('Postcode not found');
+
+    let lat=pj.result.latitude, lon=pj.result.longitude;
+
+    const moBase='https://data.hub.api.metoffice.gov.uk/land-observations/1.0.0';
+
+    let nr=await fetch(
+      moBase+'/nearest?latitude='+encodeURIComponent(lat)+'&longitude='+encodeURIComponent(lon),
+      {headers:{apikey:key,Accept:'application/json'}}
+    );
+    if(!nr.ok) throw new Error('Met Office station lookup returned HTTP '+nr.status);
+
+    let nearest=await nr.json();
+    let station=Array.isArray(nearest)
+      ? nearest[0]
+      : nearest?.locations?.[0]||nearest?.features?.[0]?.properties||nearest?.result?.[0]||nearest;
+
+    let geohash=station?.geohash||station?.properties?.geohash;
+    if(!geohash) throw new Error('Met Office did not return a nearest station/geohash');
+
+    let or=await fetch(
+      moBase+'/data?geohash='+encodeURIComponent(geohash),
+      {headers:{apikey:key,Accept:'application/json'}}
+    );
+    if(!or.ok) throw new Error('Met Office observation request returned HTTP '+or.status);
+
+    let observations=await or.json();
+    if(!Array.isArray(observations))
+      observations=observations?.observations||observations?.data||observations?.features||[];
+
+    let target=new Date(date+'T'+t+':00');
+    let rows=observations.map(o=>{
+      let d=o.datetime||o.time||o.observationTime;
+      return d?{o:o,delta:Math.abs(new Date(d)-target)}:null;
+    }).filter(Boolean).sort((a,b)=>a.delta-b.delta);
+
+    let obs=rows[0]?.o;
+
+    $('spvmostation').value=geohash+' — '+(station?.area||station?.region||'Nearest Met Office station');
+    if(obs) $('spvmotime').value=obs.datetime||obs.time||obs.observationTime||t;
+
+    /* Met Office Land Observations do not provide solar irradiance.
+       NASA POWER provides hourly ALLSKY_SFC_SW_DWN irradiance. */
+
+    let pad=n=>String(n).padStart(2,'0');
+    let dt=new Date(date+'T'+t+':00');
+    if(Number.isNaN(dt.getTime())) throw new Error('Invalid test date/time');
+
+    let y=dt.getUTCFullYear();
+    let m=pad(dt.getUTCMonth()+1);
+    let day=pad(dt.getUTCDate());
+    let ymd=''+y+m+day;
+    let hour=pad(dt.getUTCHours());
+
+    let powerUrl='https://power.larc.nasa.gov/api/temporal/hourly/point?'+
+      'parameters=ALLSKY_SFC_SW_DWN'+
+      '&community=RE&time-standard=UTC'+
+      '&longitude='+encodeURIComponent(lon)+
+      '&latitude='+encodeURIComponent(lat)+
+      '&start='+ymd+'&end='+ymd+'&format=JSON';
+
+    let rr=await fetch(powerUrl);
+    if(!rr.ok) throw new Error('NASA POWER irradiance request returned HTTP '+rr.status);
+
+    let pd=await rr.json();
+    let vals=pd?.properties?.parameter?.ALLSKY_SFC_SW_DWN||{};
+    let requestedKey=ymd+hour;
+    let irradiance=Number(vals[requestedKey]);
+
+    if(!Number.isFinite(irradiance)){
+      let keys=Object.keys(vals);
+      let nearestKey=keys.sort(
+        (a,b)=>Math.abs(Number(a)-Number(requestedKey))-Math.abs(Number(b)-Number(requestedKey))
+      )[0];
+      if(nearestKey) irradiance=Number(vals[nearestKey]);
+    }
+
+    if(!Number.isFinite(irradiance))
+      throw new Error('NASA POWER returned no irradiance value for this time.');
+
+    $('spvmoirr').value=irradiance.toFixed(0);
+    $('spvmosource').value='NASA POWER irradiance + Met Office Land Observation';
+    spvUpdateMetOfficeComparison();
+
+    if(status) status.innerHTML='<span class="good">Reference irradiance loaded: '+irradiance.toFixed(0)+' W/m²<br>Nearest Met Office location: '+eicEsc(geohash)+'</span>';
+
+  }catch(e){
+    console.error('Automatic irradiance lookup failed:',e);
+    if(status) status.innerHTML='<span class="bad">Automatic reference lookup failed: '+e.message+'. You can enter the irradiance reference manually.</span>';
+  }
+}`;
+    html=html.slice(0,start)+html.slice(start,html.indexOf("async function fetchMetOfficeReference()",start))+replacement+"\n"+html.slice(end);
+
+    document.open();
+    document.write(html);
+    document.close();
+  } catch(e) {
+    document.getElementById("s").innerHTML="<b>Could not load the application.</b><br><br>"+e.message+"<br><br>Use the previous index.html until this is resolved.";
+  }
+})();
+</script>
+</body>
+</html>
